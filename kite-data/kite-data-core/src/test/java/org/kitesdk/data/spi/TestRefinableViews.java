@@ -20,10 +20,15 @@ import com.google.common.io.Closeables;
 
 import java.io.IOException;
 import java.util.concurrent.Callable;
+
+import org.apache.hadoop.fs.Trash;
+import org.apache.hadoop.fs.TrashPolicy;
 import org.joda.time.DateTime;
 import org.joda.time.DateTimeZone;
 import org.kitesdk.data.*;
 import org.kitesdk.data.event.StandardEvent;
+import org.kitesdk.data.event.Value;
+import org.kitesdk.data.event.TestValue;
 import com.google.common.collect.Sets;
 import java.util.Arrays;
 import java.util.Collection;
@@ -63,6 +68,15 @@ public abstract class TestRefinableViews extends MiniDFSTest {
       .setTimestamp(1384204547042L) // Mon Nov 11 13:15:47 PST 2013
       .build();
 
+  protected static final Value defaultValue = Value
+      .newBuilder()
+      .setValue(2L)
+      .build();
+  protected static final TestValue testValue = TestValue
+      .newBuilder()
+      .setValue(2L)
+      .build();
+  
   @Parameterized.Parameters
   public static Collection<Object[]> data() {
     Object[][] data = new Object[][] {
@@ -85,16 +99,22 @@ public abstract class TestRefinableViews extends MiniDFSTest {
 
   protected Configuration conf = null;
   protected FileSystem fs;
+  protected TrashPolicy trashPolicy;
   protected PartitionStrategy strategy = null;
   protected DatasetDescriptor testDescriptor = null;
   protected RefinableView<StandardEvent> unbounded = null;
-
+  protected DatasetDescriptor valueDescriptor = null;
+  protected RefinableView<TestValue> testValueView = null;
+  protected RefinableView<Value> valueView = null;
+ 
   @Before
   public void setup() throws Exception {
     this.conf = (distributed ?
         MiniDFSTest.getConfiguration() :
         new Configuration());
     this.fs = FileSystem.get(conf);
+
+    this.trashPolicy = TrashPolicy.getInstance(conf, fs, fs.getHomeDirectory());
 
     this.repo = newRepo();
     this.strategy = new PartitionStrategy.Builder()
@@ -108,6 +128,11 @@ public abstract class TestRefinableViews extends MiniDFSTest {
         .build();
     repo.delete("ns", "test");
     this.unbounded = repo.create("ns", "test", testDescriptor);
+    
+    this.valueDescriptor = new DatasetDescriptor.Builder().schemaUri("resource:value.avsc").build();
+    repo.delete("ns", "value");
+    this.valueView = repo.create("ns", "value", valueDescriptor); 
+    this.testValueView = repo.load("ns", "value", TestValue.class);
   }
 
   public static <E> void assertContentEquals(Set<E> expected, View<E> view) throws IOException {
@@ -274,6 +299,25 @@ public abstract class TestRefinableViews extends MiniDFSTest {
         return null;
       }
     });
+  }
+
+  @Test
+  public void testReaderWriterCompatibleSchema() throws IOException {
+    DatasetWriter<TestValue> writer = null;
+    try {
+      writer = Datasets.load(testValueView.getUri(), TestValue.class).newWriter();
+      writer.write(testValue);
+    } finally {
+      Closeables.close(writer, false);
+    }
+
+    DatasetReader<Value> reader = null;
+    try {
+      reader = valueView.newReader();
+      Assert.assertEquals(Sets.newHashSet(defaultValue), Sets.newHashSet((Iterable<Value>) reader));
+    } finally {
+      Closeables.close(reader, false);
+    }
   }
 
   @Test
